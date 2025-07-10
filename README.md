@@ -77,3 +77,11 @@ The script will:
 - Decrypt the file (only if verification passes)
 
 ![Decryption](images/decryption.jpg)
+
+### Note
+If you don't have a public and a private key, you can generate them like this:
+```bash
+openssl genpkey -algorithm RSA -out private_key.pem -pkeyopt rsa_keygen_bits:2048
+
+openssl rsa -pubout -in private_key.pem -out public_key.pem
+```
