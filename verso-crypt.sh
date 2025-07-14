@@ -34,13 +34,15 @@ readonly IV_SIZE=16       # 128 bits for AES-CBC IV
 # This function is called on EXIT, INT, or TERM signals to securely delete all temporary files.
 cleanup() {
     local exit_code=$?
-    # Only perform cleanup if the temp directory was successfully created.
     if [[ -n "$SECURE_TMPDIR" && -d "$SECURE_TMPDIR" ]]; then
-        # Don't show cleanup message if not in debug mode. Keep the output clean.
         (( DEBUG )) && echo -e "${YELLOW}INFO: Cleaning up secure temporary directory: $SECURE_TMPDIR${RESET}" >&2
-        rm -rf "$SECURE_TMPDIR"
+        # Check permissions to delete
+        chmod -R 700 "$SECURE_TMPDIR" 2>/dev/null || true
+        # Try to delete. Protect the script from fail if the rf -rf is not working
+        if ! rm -rf "$SECURE_TMPDIR" 2>/dev/null; then
+            (( DEBUG )) && echo -e "${YELLOW}WARNING: Could not fully clean $SECURE_TMPDIR${RESET}" >&2
+        fi
     fi
-    # Exit with the original exit code
     exit $exit_code
 }
 # Register the cleanup function to be called on script exit
@@ -101,9 +103,11 @@ check_dependencies() {
     done
 
     if (( ${#missing_tools[@]} > 0 )); then
-        error_exit "Missing required tools: ${missing_tools[*]}. Please install them and try again."
+        echo -e "${RED}ERROR: Missing required tools: ${missing_tools[*]}${RESET}" >&2
+        return 1
     fi
     success_message "All dependencies are satisfied."
+    return 0
 }
 
 # ==============================================================================
@@ -230,7 +234,7 @@ create_metadata_file() {
     local encrypted_tar_file="$3"
     info_message "Creating metadata file..."
 
-    # Use `stat` command, checking for macOS/BSD and Linux variants.
+    # Check for macOS/BSD and Linux variants with 'stat' command
     local original_size
     if stat -f%z "$original_file" &>/dev/null; then
         original_size=$(stat -f%z "$original_file") # macOS/BSD
@@ -238,7 +242,7 @@ create_metadata_file() {
         original_size=$(stat -c%s "$original_file") # Linux
     fi
 
-    # JSON content is written to the file.
+    # Write the metadata file (JSON content)
     cat > "$metadata_file" << EOF
 {
   "version": "2.3",
@@ -265,10 +269,12 @@ decrypt_key_with_rsa() {
     local encrypted_key_file="$1"
     local rsa_priv_key="$2"
     local decrypted_bundle_file="$3"
+    local passin_arg="${4:-}"
     info_message "Decrypting session key with RSA private key..."
 
     # Try with OAEP padding first.
     if ! openssl pkeyutl -decrypt \
+        $passin_arg \
         -inkey "$rsa_priv_key" \
         -in "$encrypted_key_file" \
         -out "$decrypted_bundle_file" \
@@ -278,6 +284,7 @@ decrypt_key_with_rsa() {
         warning_message "RSA-OAEP decryption failed. Trying legacy PKCS1_v1.5 padding..."
         # Fallback to PKCS1.
         if ! openssl pkeyutl -decrypt \
+            $passin_arg \
             -inkey "$rsa_priv_key" \
             -in "$encrypted_key_file" \
             -out "$decrypted_bundle_file" \
@@ -461,6 +468,18 @@ main_decrypt() {
     rsa_priv_key="${rsa_priv_key/#\~/$HOME}"
     [[ ! -f "$rsa_priv_key" ]] && error_exit "RSA private key not found: $rsa_priv_key"
 
+    # --- Check if the key is protected by passowrd ---
+    local passin_arg=""
+    read -rp "Is the private key password-protected? [y/N]: " is_protected
+
+    if [[ "$is_protected" =~ ^[yY]$ ]]; then
+            read -s -p "Enter the private key password: " priv_key_pass
+            echo ""
+            [[ -z "$priv_key_pass" ]] && error_exit "Password cannot be empty."
+            passin_arg="-passin pass:${priv_key_pass}"
+    fi
+
+
     local default_output="decrypted_$(basename "${encrypted_tar_file%.enc.tar}")"
     read -rp "Enter name for the decrypted output file [${default_output}]: " output_file
     output_file="${output_file:-$default_output}"
@@ -474,9 +493,11 @@ main_decrypt() {
     local temp_decrypted_bundle
     temp_decrypted_bundle=$(mktemp -p "$SECURE_TMPDIR")
 
+    decrypt_key_with_rsa "$encrypted_key_file" "$rsa_priv_key" "$temp_decrypted_bundle" "$passin_arg"
+
     decrypt_key_with_rsa "$encrypted_key_file" "$rsa_priv_key" "$temp_decrypted_bundle"
     unpack_and_decrypt_file "$encrypted_tar_file" "$temp_decrypted_bundle" "$output_file"
-
+    unset priv_key_pass
     # --- Final success message ---
     echo ""
     success_message "=== DECRYPTION COMPLETE ==="
