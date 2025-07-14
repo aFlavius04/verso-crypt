@@ -500,7 +500,6 @@ main_decrypt() {
 
     decrypt_key_with_rsa "$encrypted_key_file" "$rsa_priv_key" "$temp_decrypted_bundle" "$passin_arg"
 
-    decrypt_key_with_rsa "$encrypted_key_file" "$rsa_priv_key" "$temp_decrypted_bundle"
     unpack_and_decrypt_file "$encrypted_tar_file" "$temp_decrypted_bundle" "$output_file"
     unset priv_key_pass
     # --- Final success message ---
