@@ -9,7 +9,7 @@ Encryption & Decryption Script
 
 This Bash script provides a secure way to encrypt and decrypt files using a hybrid cryptographic scheme combining **AES-256-CBC** for file encryption and **RSA (OAEP)** for encrypting session keys. It also includes **HMAC-SHA256** for message authentication to ensure data integrity.
 
->  **Disclaimer**: This script was created for educational and testing purposes only. While I tried my best to follow cryptographic best practices, there is **no guarantee** of absolute security or suitability for production use and I am sure that there are better suited tools for that case. Use it at your own risk.
+>  **Disclaimer**: This script was created for educational and testing purposes only. While I tried my best to follow cryptographic best practices, there is **no guarantee** of absolute security or suitability for production use and I am sure that there are better suited tools for that case. By using this script, you acknowledge and accept these risks and responsibilities.
 
 ---
 
