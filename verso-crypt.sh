@@ -5,8 +5,6 @@ IFS=$'\n\t'       # Set Internal Field Separator to prevent word splitting.
 umask 077         # Create new files with permissions 600 (owner read/write only).
 
 # --- Global Configuration ---
-# Array to track all temporary files and directories for cleanup.
-declare -a TEMP_FILES=()
 # Secure temporary directory path will be stored here.
 SECURE_TMPDIR=""
 # Debug mode (enable with `DEBUG=1 ./verso-crypt.sh ...`)
@@ -167,16 +165,14 @@ encrypt_file_and_package() {
     local key_bundle_file="$2"
     local output_tar_file="$3"
 
-    # --- Create temporary files within the secure directory ---
-    local aes_key_file iv_file hmac_key_file ciphertext_file hmac_file
-    local aes_key_hex hmac_key_hex
-    aes_key_file=$(mktemp -p "$SECURE_TMPDIR")
+    # --- Create temporary files for binary data that needs to be archived ---
+    local iv_file ciphertext_file hmac_file
+
     iv_file=$(mktemp -p "$SECURE_TMPDIR")
-    hmac_key_file=$(mktemp -p "$SECURE_TMPDIR")
     ciphertext_file=$(mktemp -p "$SECURE_TMPDIR")
     hmac_file=$(mktemp -p "$SECURE_TMPDIR")
 
-    # --- Extract AES and HMAC keys from the bundle using head/tail (used like this for portability) ---
+    # --- Extract AES and HMAC keys into hex-encoded variables ---
     info_message "Splitting session key into AES and HMAC keys..."
     aes_key_hex=$(head -c "$AES_KEY_SIZE" "$key_bundle_file" | xxd -p -c 256)
     hmac_key_hex=$(tail -c "$HMAC_KEY_SIZE" "$key_bundle_file" | xxd -p -c 256)
@@ -185,7 +181,7 @@ encrypt_file_and_package() {
         error_exit "Failed to split and hex-encode the session key bundle."
     fi
 
-    # --- Generate a random IV ---
+    # --- Generate a random IV and store it as hex and binary ---
     info_message "Generating random IV..."
     local iv_hex
 
@@ -253,7 +249,7 @@ create_metadata_file() {
     # Write the metadata file (JSON content)
     cat > "$metadata_file" << EOF
 {
-  "version": "2.3",
+  "version": "2.6",
   "encryptionTimestampUTC": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
   "encryptionAlgorithm": "AES-256-CBC",
   "authenticationAlgorithm": "HMAC-SHA256",
@@ -324,22 +320,24 @@ unpack_and_decrypt_file() {
     local iv_file="$unpack_dir/iv.bin"
     local received_hmac_file="$unpack_dir/hmac.bin"
 
-    # --- Extract AES and HMAC keys from the decrypted bundle ---
-    local aes_key_file hmac_key_file
-    aes_key_file=$(mktemp -p "$SECURE_TMPDIR")
-    hmac_key_file=$(mktemp -p "$SECURE_TMPDIR")
+    # --- Extract AES , HMAC , IV keys from the decrypted bundle ---
+    local aes_key_hex hmac_key_hex iv_hex
+    aes_key_hex=$(head -c "$AES_KEY_SIZE" "$key_bundle_file" | xxd -p -c 256)
+    hmac_key_hex=$(tail -c "$HMAC_KEY_SIZE" "$key_bundle_file" | xxd -p -c 256)
+    iv_hex=$(xxd -p -c 256 "$iv_file")
+
     info_message "Splitting decrypted session key..."
-    if ! head -c "$AES_KEY_SIZE" "$key_bundle_file" > "$aes_key_file" || \
-       ! tail -c "$HMAC_KEY_SIZE" "$key_bundle_file" > "$hmac_key_file"; then
-        error_exit "Failed to split the decrypted session key bundle."
+    if [[ -z "$aes_key_hex" || -z "$hmac_key_hex" || -z "$iv_hex" ]]; then
+        error_exit "Failed to read or hex-encode keys/IV from temporary files."
     fi
 
     # --- VERIFY INTEGRITY FIRST ---
     info_message "Verifying file integrity with HMAC-SHA256..."
     local calculated_hmac_file
     calculated_hmac_file=$(mktemp -p "$SECURE_TMPDIR")
+
     #Calculate HMAC in binary format
-    if ! openssl dgst -sha256 -mac HMAC -macopt "hexkey:$(xxd -p -c 256 "$hmac_key_file")" \
+    if ! openssl dgst -sha256 -mac HMAC -macopt "hexkey:$hmac_key_hex" \
         -binary "$ciphertext_file" > "$calculated_hmac_file"; then
         error_exit "HMAC recalculation failed during verification."
     fi
@@ -349,7 +347,6 @@ unpack_and_decrypt_file() {
     # It prints the keys and hashes to help diagnose HMAC mismatches if so
     if (( DEBUG )); then
         debug_message "--- HMAC Verification Details ---"
-        debug_message "HMAC Key Used (hex):   $(xxd -p -c 256 "$hmac_key_file")"
         debug_message "Received HMAC (hex):   $(xxd -p -c 256 "$received_hmac_file")"
         debug_message "Calculated HMAC (hex): $(xxd -p -c 256 "$calculated_hmac_file")"
         debug_message "Ciphertext file size:  $(stat -c%s "$ciphertext_file" 2>/dev/null || stat -f%z "$ciphertext_file" 2>/dev/null)"
@@ -369,8 +366,8 @@ unpack_and_decrypt_file() {
     if ! openssl enc -aes-256-cbc -d \
         -in "$ciphertext_file" \
         -out "$output_file" \
-        -K "$(xxd -p -c 256 "$aes_key_file")" \
-        -iv "$(xxd -p -c 256 "$iv_file")"; then
+        -K "$aes_key_hex" \
+        -iv "$iv_hex"; then
         error_exit "AES decryption failed. The data may be corrupt."
     fi
     success_message "File decrypted successfully."
