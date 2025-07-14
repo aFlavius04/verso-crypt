@@ -169,6 +169,7 @@ encrypt_file_and_package() {
 
     # --- Create temporary files within the secure directory ---
     local aes_key_file iv_file hmac_key_file ciphertext_file hmac_file
+    local aes_key_hex hmac_key_hex
     aes_key_file=$(mktemp -p "$SECURE_TMPDIR")
     iv_file=$(mktemp -p "$SECURE_TMPDIR")
     hmac_key_file=$(mktemp -p "$SECURE_TMPDIR")
@@ -177,29 +178,36 @@ encrypt_file_and_package() {
 
     # --- Extract AES and HMAC keys from the bundle using head/tail (used like this for portability) ---
     info_message "Splitting session key into AES and HMAC keys..."
-    if ! head -c "$AES_KEY_SIZE" "$key_bundle_file" > "$aes_key_file" || \
-       ! tail -c "$HMAC_KEY_SIZE" "$key_bundle_file" > "$hmac_key_file"; then
-        error_exit "Failed to split the session key bundle."
+    aes_key_hex=$(head -c "$AES_KEY_SIZE" "$key_bundle_file" | xxd -p -c 256)
+    hmac_key_hex=$(tail -c "$HMAC_KEY_SIZE" "$key_bundle_file" | xxd -p -c 256)
+
+    if [[ -z "$aes_key_hex" || -z "$hmac_key_hex" ]]; then
+        error_exit "Failed to split and hex-encode the session key bundle."
     fi
 
     # --- Generate a random IV ---
     info_message "Generating random IV..."
-    openssl rand "$IV_SIZE" > "$iv_file"
+    local iv_hex
+
+    iv_hex=$(openssl rand "$IV_SIZE" | xxd -p -c 256)
+    # Store the binary IV to archive
+    echo "$iv_hex" | xxd -r -p > "$iv_file"
+
 
     # --- Encrypt the file with AES-256-CBC ---
     info_message "Encrypting file with AES-256-CBC..."
     if ! openssl enc -aes-256-cbc -e \
         -in "$input_file" \
         -out "$ciphertext_file" \
-        -K "$(xxd -p -c 256 "$aes_key_file")" \
-        -iv "$(xxd -p -c 256 "$iv_file")"; then
+        -K "$aes_key_hex" \
+        -iv "$iv_hex"; then
         error_exit "AES encryption failed."
     fi
 
     # --- Calculate HMAC-SHA256 of the CIPHERTEXT (Encrypt-then-MAC) ---
     # Save only the binary HMAC
     info_message "Calculating HMAC-SHA256 for integrity protection..."
-    if ! openssl dgst -sha256 -mac HMAC -macopt "hexkey:$(xxd -p -c 256 "$hmac_key_file")" \
+    if ! openssl dgst -sha256 -mac HMAC -macopt "hexkey:$hmac_key_hex" \
         -binary "$ciphertext_file" > "$hmac_file"; then
         error_exit "HMAC calculation failed."
     fi
